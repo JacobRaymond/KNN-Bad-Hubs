@@ -1,6 +1,7 @@
 library(ISLR)
 library(FNN)
 library(tidyverse)
+library(caret)
 
 ####Import data####
 df<-Smarket
@@ -289,21 +290,21 @@ EcwKNN=function(train, test, k=10){
 #### Simulation ####
 
 # Training and Test Sets
-train= df%>% as_tibble() %>% sample_frac(size = 0.8)
+train= df%>% as_tibble() %>% sample_frac(size = 0.9)
 test=df%>% as_tibble() %>% anti_join(train)
 
 # KNN
-knn.pred=knn.reg(train[,-1], test=test[,-1], y=as_vector(train[,1]), k=10)
+knn.pred=knn.reg(train[,-1], test=test[,-1], y=as_vector(train[,1]), k=5)
 (knn.pred$pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
 
 #EwKNN
-EwKNN(train, test)$MAE
+EwKNN(train, test, k=5)$MAE
 
 #EcKNN
-EcKNN(train, test)$MAE
+EcKNN(train, test, k=5)$MAE
 
 #EcwKNN
-EcwKNN(train, test)$MAE
+EcwKNN(train, test, k=5)$MAE
 
 #Linear Regression
 y=train[,1] %>% as_vector()
@@ -311,3 +312,13 @@ LinReg=lm(y~., data=train[,-1])
 LinReg.pred=predict(LinReg, newdata=test[-1])
 (LinReg.pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
 
+#Random forest
+tunegrid <- expand.grid(.mtry = (1:7)) #7 possible parameters
+rf_mod <- train(V1 ~ ., 
+                       data = train,
+                      ntree = 500,
+                       method = 'rf',
+                       tuneGrid = tunegrid,
+                trControl=trainControl(method = "cv", number=5, verboseIter=F))
+rf.pred=predict(rf_mod, newdata=test[-1])
+(rf.pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
