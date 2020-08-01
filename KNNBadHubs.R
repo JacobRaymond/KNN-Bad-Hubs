@@ -4,77 +4,17 @@ library(tidyverse)
 library(caret)
 
 ####Import data####
-df<-Smarket
+df=Smarket
 
 #Convert "Direction" to numeric" using one-hot encoding
 df=mutate(df, Direction=ifelse(Direction=="Up", 1, 0))
 
-####Hub analysis####
-
-#Remove output
-Today=df$Today
-df=select(df, -Today)
-
-#Get the closest neighbours
-cn=get.knn(df, k = 3)
-
-#Number of instances
-cn$nn.index %>%
-  table()%>%
-  as.data.frame()%>%
-  ggplot()+
-    geom_histogram(aes(Freq))+
-    labs(x="N(x)", y="Count")+
-  scale_x_continuous(breaks=seq_len(10))
-
-#Find the points part of N(x) for each observation
-whereNX=function(i){
-  cn$nn.index  %>%
-    as_tibble() %>%
-    mutate(Obs=1:nrow(.))%>%
-    filter_at(vars(-Obs), any_vars(. ==i))%>%
-    .$Obs
-}
-NX=map(1:nrow(df), whereNX)
-
-#Calculate error
-ErrorNX=vector()
-for(i in 1:length(NX)){
-  if(length(NX[[i]])==0){
-    ErrorNX[i]=NA
-  }else{
-    ErrorNX[i]=mean((Today[i]-Today[NX[[i]]])^2)
-  }
-}
-Err=tibble(Obs=1:nrow(df), 
-            Error=ErrorNX, 
-            Instances=map_dbl(NX, function(x)(length(x)))) %>%
-  drop_na()
-
-#High-error cases
-Err %>% 
-  top_frac(wt=Error, n=0.25) %>%
-  ggplot()+geom_bar(aes(Instances))+labs(x="N(x)", y="Count")+
-  scale_x_continuous(breaks=seq_len(10))
-
-#Number of high error points
-Err %>% 
-  top_frac(wt=Error, n=0.25) %>% nrow()
-
-#Proportion of bad hubs
-Err %>% 
-  top_frac(wt=Error, n=0.25) %>% 
-  filter(Instances >5) %>% nrow() /Err %>% 
-  top_frac(wt=Error, n=0.25) %>%  nrow()
-
-df=cbind(Today, df)
 
 #### PCA ####
 pc=prcomp(df[-1])
-(pc$sdev^2/sum(pc$sdev^2)) %>% cumsum() #7 PC
 df=cbind(df$Today, pc$x[,1:7])
 
-#### Error-based Weighing ####
+#### Error Weighting ####
 
 EwKNN=function(train, test, k=10){
   
@@ -97,7 +37,7 @@ EwKNN=function(train, test, k=10){
     if(length(NX[[i]])==0){
       ErrorNX[i]=NA
     }else{
-      ErrorNX[i]=(as.numeric(train[i, 1])-train[NX[[i]], 1])^2 %>% 
+      ErrorNX[i]=abs(as.numeric(train[i, 1])-train[NX[[i]], 1]) %>% 
         as_vector() %>% 
         mean()
     }
@@ -143,7 +83,7 @@ EwKNN=function(train, test, k=10){
   output
 }
 
-#### Error Corrected Nearest Neighbours ####
+#### Error Correction ####
 
 EcKNN=function(train, test, k=10){
   
@@ -165,7 +105,7 @@ EcKNN=function(train, test, k=10){
     if(length(x)<1){
       NA
     }else{
-      df[x,1] %>% 
+      train[x,1] %>% 
         as_vector() %>% 
         mean()
     }
@@ -198,7 +138,7 @@ EcKNN=function(train, test, k=10){
   output
 }
 
-#### Error-corrected Weighing ####
+#### Error-Weighted Correction####
 
 EcwKNN=function(train, test, k=10){
   
@@ -240,7 +180,7 @@ EcwKNN=function(train, test, k=10){
     if(length(x)<1){
       NA
     }else{
-      df[x,1] %>% 
+      train[x,1] %>% 
         as_vector() %>% 
         mean()
     }
@@ -289,36 +229,126 @@ EcwKNN=function(train, test, k=10){
 
 #### Simulation ####
 
-# Training and Test Sets
-train= df%>% as_tibble() %>% sample_frac(size = 0.9)
-test=df%>% as_tibble() %>% anti_join(train)
+set.seed(20831748)
 
-# KNN
-knn.pred=knn.reg(train[,-1], test=test[,-1], y=as_vector(train[,1]), k=5)
-(knn.pred$pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
+#Create folds
+folds=nrow(df) %>% 
+  seq_len() %>% 
+  sample()
 
-#EwKNN
-EwKNN(train, test, k=5)$MAE
+knn.MAE=vector()
+knn.time=vector()
+EwKNN.MAE=vector()
+EwKNN.time=vector()
+EcKNN.MAE=vector()
+EcKNN.time=vector()
+EcwKNN.MAE=vector()
+EcwKNN.time=vector()
+knn.MAE10=vector()
+knn.time10=vector()
+EwKNN.MAE10=vector()
+EwKNN.time10=vector()
+EcKNN.MAE10=vector()
+EcKNN.time10=vector()
+EcwKNN.MAE10=vector()
+EcwKNN.time10=vector()
+LinReg.MAE=vector()
+rf.MAE=vector()
 
-#EcKNN
-EcKNN(train, test, k=5)$MAE
+for(i in 1:10){
+  
+  #Training and Test set
+  test=df[folds[(125*i-124): (125*i)], ] %>% 
+    as_tibble()
+  train=df%>% as_tibble() %>% anti_join(test)
+  
+  # KNN (k=5)
+  Start=Sys.time()
+  knn.pred=knn.reg(train[,-1], test=test[,-1], y=as_vector(train[,1]), k=5)
+  knn.MAE[i]=(knn.pred$pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
+  End=Sys.time()
+  knn.time[i]=End-Start
+  
+  # KNN (k=10)
+  Start=Sys.time()
+  knn.pred=knn.reg(train[,-1], test=test[,-1], y=as_vector(train[,1]), k=10)
+  knn.MAE10[i]=(knn.pred$pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
+  End=Sys.time()
+  knn.time10[i]=End-Start
+  
+  #EwKNN (k=5)
+  Start=Sys.time()
+  EwKNN.MAE[i]=EwKNN(train, test, k=5)$MAE
+  End=Sys.time()
+  EwKNN.time[i]=End-Start
+  
+  #EcKNN (k=5)
+  Start<-Sys.time()
+  EcKNN.MAE[i]=EcKNN(train, test, k=5)$MAE
+  End=Sys.time()
+  EcKNN.time[i]=End-Start
+  
+  #EcwKNN (k=5)
+  Start=Sys.time()
+  EcwKNN.MAE[i]=EcwKNN(train, test, k=5)$MAE
+  End=Sys.time()
+  EcwKNN.time[i]=End-Start
+  
+  # KNN (k=10)
+  Start=Sys.time()
+  knn.pred=knn.reg(train[,-1], test=test[,-1], y=as_vector(train[,1]), k=10)
+  knn.MAE10[i]=(knn.pred$pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
+  End=Sys.time()
+  knn.time10[i]=End-Start
+  
+  #EwKNN (k=10)
+  Start=Sys.time()
+  EwKNN.MAE10[i]=EwKNN(train, test, k=10)$MAE
+  End=Sys.time()
+  EwKNN.time10[i]=End-Start
+  
+  #EcKNN (k=10)
+  Start=Sys.time()
+  EcKNN.MAE10[i]=EcKNN(train, test, k=10)$MAE
+  End=Sys.time()
+  EcKNN.time10[i]=End-Start
+  
+  #EcwKNN (k=10)
+  Start=Sys.time()
+  EcwKNN.MAE10[i]=EcwKNN(train, test, k=10)$MAE
+  End=Sys.time()
+  EcwKNN.time10[i]=End-Start
+  
+  #Linear Regression
+  y=train[,1] %>% as_vector()
+  LinReg=lm(y~., data=train[,-1])
+  LinReg.pred=predict(LinReg, newdata=test[-1])
+  LinReg.MAE[i]=(LinReg.pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
+  
+  #Random forest
+  tunegrid = expand.grid(.mtry = (1:7)) #7 possible parameters
+  rf_mod = train(V1 ~ ., 
+                 data = train,
+                 ntree = 500,
+                 method = 'rf',
+                 tuneGrid = tunegrid,
+                 trControl=trainControl(method = "cv", number=5, verboseIter=F))
+  rf.pred=predict(rf_mod, newdata=test[-1])
+  rf.MAE[i]=(rf.pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
+}
 
-#EcwKNN
-EcwKNN(train, test, k=5)$MAE
+#### MAE ####
+res=matrix(c("KNN, k=5", signif(mean(knn.MAE), digits = 3), signif(sd(knn.MAE), digits = 3), signif(sum(knn.time), digits = 1), 
+             "KNN, k=10", signif(mean(knn.MAE10), digits = 3),signif(sd(knn.MAE10), digits = 3),signif(sum(knn.time10, digits = 1)),
+             "EwKNN, k=5", signif(mean(EwKNN.MAE), digits = 3), signif(sd(EwKNN.MAE), digits = 3),signif(sum(EwKNN.time, digits = 1)), 
+             "EwKNN, k=10", signif(mean(EwKNN.MAE10), digits = 3),signif(sd(EwKNN.MAE10), digits = 3),signif(sum(EwKNN.time10, digits = 1)),
+             "EcKNN, k=5", signif(mean(EcKNN.MAE), digits = 3), signif(sd(EcKNN.MAE), digits = 3), signif(sum(EcKNN.time, digits = 1)),
+             "EcKNN, k=10", signif(mean(EcKNN.MAE10), digits = 3), signif(sd(EcKNN.MAE10), digits = 3), signif(sum(EcKNN.time10, digits = 1)),
+             "EcwKNN, k=5", signif(mean(EcwKNN.MAE), digits = 3), signif(sd(EcwKNN.MAE), digits = 3), signif(sum(EcwKNN.time, digits = 1)),
+             "EcwKNN, k=10", signif(mean(EcwKNN.MAE10), digits = 3), signif(sd(EcwKNN.MAE10), digits = 3), signif(sum(EcwKNN.time10, digits = 1)),
+             "Linear Regression", signif(mean(LinReg.MAE), digits = 3), signif(sd(LinReg.MAE), digits = 3), "-",
+             "Random Forests", signif(mean(rf.MAE), digits = 3), signif(sd(rf.MAE), digits = 3), "-"), nrow = 4)
+rownames(res)=c("Model", "MAE", "Standard Deviation", "Duration (Secs.)")
+res=t(res)
 
-#Linear Regression
-y=train[,1] %>% as_vector()
-LinReg=lm(y~., data=train[,-1])
-LinReg.pred=predict(LinReg, newdata=test[-1])
-(LinReg.pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
-
-#Random forest
-tunegrid <- expand.grid(.mtry = (1:7)) #7 possible parameters
-rf_mod <- train(V1 ~ ., 
-                       data = train,
-                      ntree = 500,
-                       method = 'rf',
-                       tuneGrid = tunegrid,
-                trControl=trainControl(method = "cv", number=5, verboseIter=F))
-rf.pred=predict(rf_mod, newdata=test[-1])
-(rf.pred-test[,1]) %>% abs() %>% as_vector() %>% mean()
+knitr::kable(res, booktabs=T, align="c", caption ="Results of the Simulation Study", label="Res")
